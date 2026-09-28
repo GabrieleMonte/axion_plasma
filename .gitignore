@@ -1,0 +1,6 @@
+# Claude Code project notes stay local
+CLAUDE.md
+
+# Python bytecode
+__pycache__/
+*.pyc
