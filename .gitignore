@@ -9,3 +9,12 @@ __pycache__/
 # run_main.npz is tracked; these are references and intermediates, ~100 MB.
 data/run_step_dx*.npz
 data/greens_run.npz
+
+# Local tooling: validation, cross-checks and parameter scans. Kept on disk,
+# out of the repo, which tracks only the production runs. code/analytic.py is
+# the exact single-slab reference used by validate_greens.py and nothing else.
+code/analytic.py
+scripts/validate_greens.py
+scripts/fig_greens_compare.py
+scripts/scan.py
+scripts/fig_scan.py

@@ -8,31 +8,51 @@ numbers refer to the PDF).
     E_y(x,t) = (1/pi) Re int_0^inf e^{-i omega t} E~ domega       (38)
 
 The only numerics is the final omega integral; everything else is closed form.
-psi_pm and W come from tmatrix; the spatial integrals reduce to the two
-antiderivatives (36)-(37), evaluated at region edges.
+Self-contained apart from Params: the transfer matrix for psi_pm and W is in
+here, and so is an independent ODE cross-check of it.
+
+Layout, in the order the derivation builds things:
+
+    StepParams                the piecewise-constant profile
+    kap .. wronskian          Step 3, psi_pm and W by transfer matrix
+    scaled_erfc, ..._diff     the stability primitives everything else rests on
+    a_tilde, S_tilde          Piece A, the source
+    dF1, dF2                  Piece B, the two spatial integrals in closed form
+    E_tilde                   Piece C, the Green's function assembled
+    omega_grid .. E_y         Piece D, back to the time domain
+    ode_solutions             cross-check of the transfer matrix (unused by
+                              the solver; kept as the independent check)
 
 Everything is vectorised over omega: E_tilde takes the whole omega array and
 returns (N_omega, N_x). The work per omega is ~300 small special-function
 calls, so evaluating them one omega at a time is all Python overhead -- doing
-the array at once is ~50x faster for the same arithmetic.
+the array at once is ~6x faster for the same arithmetic.
 
-Numerical-stability rule used throughout: an exponential prefactor and an
-erfc/erf that separately overflow and underflow are always combined into a
-single exp(<summed exponent>) * w(<argument in the bounded half-plane>) call,
-where w(z) = exp(-z^2) erfc(-iz) is the Faddeeva function (scipy wofz).
+Two numerical rules the whole module depends on, both learned the hard way:
+
+  * An exponential prefactor and an erfc/erf that separately overflow and
+    underflow are always combined into a single exp(<summed exponent>) *
+    w(<argument in the bounded half-plane>) call, where w is the Faddeeva
+    function (scipy wofz).
+  * A definite integral is never built as a difference of antiderivatives.
+    See scaled_erf_diff for what that cost.
 """
 import numpy as np
+from scipy.integrate import solve_ivp
 from scipy.special import wofz
 
 from axion_solver import Params
-from tmatrix import psi_states_vec
 
 SQ2 = np.sqrt(2.0)
 
 
 class StepParams(Params):
     """Params with the piecewise-constant density profile of the derivation
-    (the tanh in the original runs was a numerical convenience, not the model)."""
+    (the tanh in the original runs was a numerical convenience, not the model).
+
+    Note the coefficient at a node sitting exactly on an interface takes the
+    right-hand value. That is a modelling choice, and it matters: it displaces
+    the interface by half a cell for a time-domain solver sampling this."""
 
     def omega_p(self, x):
         x = np.asarray(x, float)
@@ -42,7 +62,105 @@ class StepParams(Params):
 
 
 # ----------------------------------------------------------------------------
-# stable scaled error functions
+# Step 3 -- the two homogeneous solutions, by transfer matrix (Eqs. 23-29)
+#
+# Regions 1..5 are separated by four interfaces at X_i = i*L. Carry the state
+# vector (psi, psi'), which is continuous across every interface, so the only
+# thing that changes there is kappa. Within a slab of width d the propagator is
+#     M(k,d) = [[ cos(kd), sin(kd)/k ], [ -k sin(kd), cos(kd) ]]
+# written below with sin(kd)/k = d*sinc(kd), so nothing ever divides by k and
+# the k -> 0 point (omega = 1.0 exactly, inside the band) is regular.
+# ----------------------------------------------------------------------------
+
+def kap(omega, V):
+    """kappa = sqrt(omega^2 - V) on the retarded branch, Im >= 0. Scalar."""
+    k = np.sqrt(complex(omega) ** 2 - V + 0j)
+    return k if k.imag >= 0 else -k
+
+
+def kap_vec(omega, V):
+    """kap for an array of omega."""
+    k = np.sqrt(np.asarray(omega, complex) ** 2 - V)
+    return np.where(k.imag >= 0, k, -k)
+
+
+def _sinc(z):
+    """sin(z)/z, series near 0. Scalars and arrays."""
+    z = np.asarray(z, complex)
+    small = np.abs(z) < 1e-4
+    safe = np.where(small, 1.0, z)          # dummy; the unused branch is 0/0
+    z2 = z * z
+    return np.where(small, 1.0 - z2/6.0 + z2*z2/120.0, np.sin(safe)/safe)
+
+
+def M(k, d):
+    """Propagator of (psi, psi') across a uniform slab of width d."""
+    c = np.cos(k * d)
+    s = d * _sinc(k * d)                    # = sin(kd)/k, finite at k = 0
+    return np.array([[c, s], [-k * k * s, c]], dtype=complex)
+
+
+def _step(k, d, psi, dpsi):
+    """M(k,d) applied to (psi, dpsi) elementwise -- the vectorised form."""
+    c = np.cos(k * d)
+    s = d * _sinc(k * d)
+    return c * psi + s * dpsi, -k * k * s * psi + c * dpsi
+
+
+def psi_states_vec(p, omega):
+    """psi_- and psi_+ for an array of omega.
+
+    Returns (sm, sp, W, k) with sm[i], sp[i] of shape (Nw, 2) holding
+    (psi, psi') at interface X_{i+1} for i = 0..3, W of shape (Nw,), and k of
+    shape (5, Nw). W = 0 would mean a quasinormal mode; see wronskian_scan."""
+    om = np.atleast_1d(np.asarray(omega, complex))
+    L = p.L_region
+    k = np.stack([kap_vec(om, (w * p.m_a) ** 2) for w in p.w])     # (5, Nw)
+
+    # psi_- : e^{-i k1 (x-L)} in region 1, so at X1 the state is (1, -i k1)
+    psi = np.ones_like(om)
+    dpsi = -1j * k[0]
+    sm = [np.stack([psi, dpsi], axis=-1)]
+    for j in (1, 2, 3):                       # cross slabs 2,3,4 rightwards
+        psi, dpsi = _step(k[j], L, psi, dpsi)
+        sm.append(np.stack([psi, dpsi], axis=-1))
+
+    # psi_+ : e^{+i k5 (x-4L)} in region 5, so at X4 the state is (1, +i k5)
+    psi = np.ones_like(om)
+    dpsi = 1j * k[4]
+    sp = [None, None, None, np.stack([psi, dpsi], axis=-1)]
+    for i, j in zip((2, 1, 0), (3, 2, 1)):    # cross slabs 4,3,2 leftwards
+        psi, dpsi = _step(k[j], -L, psi, dpsi)
+        sp[i] = np.stack([psi, dpsi], axis=-1)
+
+    W = sm[3][:, 1] * sp[3][:, 0] - sm[3][:, 0] * sp[3][:, 1]
+    return sm, sp, W, k
+
+
+def psi_states(p, omega):
+    """Single-omega version, state vectors as dicts keyed by interface
+    position (readable; used by the figures and the validation suite)."""
+    L = p.L_region
+    sm, sp, W, k = psi_states_vec(p, omega)
+    X = [L, 2 * L, 3 * L, 4 * L]
+    return ({X[i]: sm[i][0] for i in range(4)},
+            {X[i]: sp[i][0] for i in range(4)},
+            W[0], [kk[0] for kk in k])
+
+
+def wronskian(p, omega):
+    return psi_states(p, omega)[2]
+
+
+def wronskian_scan(p, om_lo=0.0, om_hi=10.0, d_om=1e-3):
+    """|W(omega)| on the real axis -- run BEFORE trusting the inversion:
+    a near-zero would mean a quasinormal mode sitting on the contour."""
+    oms = np.arange(om_lo, om_hi + d_om/2, d_om)
+    return oms, np.abs(psi_states_vec(p, oms)[2])
+
+
+# ----------------------------------------------------------------------------
+# stable scaled error functions -- the foundation for Pieces A and B
 # ----------------------------------------------------------------------------
 
 def scaled_erfc(E, z):
@@ -57,12 +175,6 @@ def scaled_erfc(E, z):
     out[m] = np.exp(E[m] - z[m]**2) * wofz(1j*z[m])
     out[n] = 2.0*np.exp(E[n]) - np.exp(E[n] - z[n]**2) * wofz(-1j*z[n])
     return out
-
-
-def scaled_erf(E, z):
-    """e^E * erf(z) = e^E - e^E erfc(z). Only safe when erfc(z) is not close
-    to 1; for a DIFFERENCE of two of these use scaled_erf_diff instead."""
-    return np.exp(np.asarray(E, complex)) - scaled_erfc(E, z)
 
 
 def scaled_erf_diff(E, z1, z2):
@@ -139,17 +251,8 @@ def S_tilde(x, omega, p):
 
 
 # ----------------------------------------------------------------------------
-# Piece B -- the two spatial antiderivatives (Eqs. 36-37), scaled
+# Piece B -- the two spatial integrals in closed form (Eqs. 36-37)
 # ----------------------------------------------------------------------------
-
-def _F1(u, lam, alpha, beta, C):
-    """e^C * antiderivative of e^{lam u} erfc(alpha u + beta)  (Eq. 36).
-    C carries the external Gaussian -q^2 sigma^2/2 so every exponent is tame."""
-    z = alpha*u + beta
-    D = (lam/alpha) * (lam/(4.0*alpha) - beta)
-    return (scaled_erfc(C + lam*u, z)
-            + scaled_erf(C + D, z - lam/(2.0*alpha))) / lam
-
 
 def _gauss_legendre(f, a, b, n_panels, order=10):
     """Composite Gauss-Legendre quadrature of f on [a, b] (fallback path)."""
@@ -165,8 +268,8 @@ def _gauss_legendre(f, a, b, n_panels, order=10):
 def dF1(u1, u2, lam, alpha, beta, C):
     """e^C * int_{u1}^{u2} e^{lam u} erfc(alpha u + beta) du (Eq. 36).
 
-    Built as a definite integral, NOT as F1(u2) - F1(u1): each piece is a
-    difference of two values that are nearly equal whenever the erfc
+    Built as a definite integral, NOT as F1(u2) - F1(u1): each piece would be
+    a difference of two values that are nearly equal whenever the erfc
     arguments sit deep in a half-plane, so forming the antiderivatives first
     throws away every significant digit. Both pieces below are differences of
     quantities that are individually small.
@@ -368,7 +471,7 @@ def omega_grid(p, d_base=1e-3, w_fine=3.0, w_max=150.0, growth=1.02,
     2. The driven term carries e^{i(omega-omega_a)u/v_a}, rate u/v_a up to
        ~1400 at the far edge, weighted by the drive Gaussian of width
        v_a/sigma_x = 0.067 -> d_a within +-win_a of omega_a.
-    3. The switch-on tail, |E~| ~ 1/omega^3 and smooth -> a geometrically
+    3. The switch-on tail, |E~| ~ 1/omega^2 and smooth -> a geometrically
        stretched grid from w_fine out to w_max.
     """
     nodes = [np.arange(0.0, w_fine, d_base)]
@@ -434,11 +537,11 @@ def E_y(x, t, p, om=None, x_L=-90.0, x_R=140.0, Et=None, eps=0.015,
     every such endpoint term carries e^{-eps u_R/v_a} (~1e-9 at eps=0.015)
     and E~ is smooth on the physical scale v_a/sigma_x. The price is the
     factor e^{eps t} restoring the contour shift, which multiplies the
-    quadrature error by ~50 at t = 260 -- still inside budget.
+    quadrature error by ~40 at t = 260 -- still inside budget.
 
     Builds E~ once on the grid (or reuses a precomputed Et of shape
     (len(om), len(x))), then every output time is one weighted sum.
-    Returns (E, om, Et) so Et can be cached."""
+    Returns (E, om, Et) so Et can be cached across time grids."""
     x = np.atleast_1d(np.asarray(x, float))
     t = np.atleast_1d(np.asarray(t, float))
     if om is None:
@@ -457,8 +560,60 @@ def E_y(x, t, p, om=None, x_L=-90.0, x_R=140.0, Et=None, eps=0.015,
     return E, om, Et
 
 
-def wronskian_scan(p, om_lo=0.0, om_hi=10.0, d_om=1e-3):
-    """|W(omega)| on the real axis -- run BEFORE trusting the inversion:
-    a near-zero would mean a quasinormal mode sitting on the contour."""
-    oms = np.arange(om_lo, om_hi + d_om/2, d_om)
-    return oms, np.abs(psi_states_vec(p, oms)[2])
+# ----------------------------------------------------------------------------
+# Independent cross-check of the transfer matrix: integrate the homogeneous
+# equation numerically on the RESOLVED tanh profile (p.omega_p with p.ell),
+# renormalising through the evanescent layers. The sharp-step transfer matrix
+# and this must agree linearly as ell -> 0, which is the test that the step
+# idealisation is the ell -> 0 limit of the profile the PIC runs used.
+# Nothing in the solver calls this.
+# ----------------------------------------------------------------------------
+
+def _ode_integrate(V, omega, xa, xb, y0, n=4001):
+    """Integrate psi'' = (V - omega^2) psi from xa to xb, renormalising to
+    avoid overflow. Returns x, psi, psi', and the accumulated log-scale so the
+    two solutions can be put on a common footing."""
+    xs = np.linspace(xa, xb, n)
+
+    def rhs(x, y):
+        return [y[1], (V(x) - omega ** 2) * y[0]]
+
+    psi = np.empty(n, complex)
+    dpsi = np.empty(n, complex)
+    logs = np.zeros(n)
+    y = np.array(y0, dtype=complex)
+    psi[0], dpsi[0] = y
+    acc = 0.0
+    for i in range(n - 1):
+        sol = solve_ivp(rhs, (xs[i], xs[i + 1]), y, rtol=1e-10, atol=1e-30,
+                        method="DOP853")
+        y = sol.y[:, -1]
+        m = max(abs(y[0]), abs(y[1]), 1e-300)
+        if m > 1e6 or m < 1e-6:          # renormalise, remember the factor
+            y = y / m
+            acc += np.log(m)
+        psi[i + 1], dpsi[i + 1] = y
+        logs[i + 1] = acc
+    return xs, psi, dpsi, logs
+
+
+def ode_solutions(p, omega, x_lo=-40.0, x_hi=60.0, n=4001):
+    """psi_- and psi_+ by ODE integration of p's own (tanh) profile."""
+    V = lambda x: float(p.omega_p(np.array([x]))[0] ** 2)
+    kL = kap(omega, (p.w[0] * p.m_a) ** 2)
+    kR = kap(omega, (p.w[-1] * p.m_a) ** 2)
+
+    xs, pm, dpm, lm = _ode_integrate(       # decays as x -> -inf
+        V, omega, x_lo, x_hi, [1.0 + 0j, -1j * kL], n)
+    xs2, pp, dpp, lp = _ode_integrate(      # outgoing at +inf, integrated left
+        V, omega, x_hi, x_lo, [1.0 + 0j, 1j * kR], n)
+    pp, dpp, lp = pp[::-1], dpp[::-1], lp[::-1]     # onto increasing x
+
+    return dict(x=xs, pm=pm, dpm=dpm, logm=lm, pp=pp, dpp=dpp, logp=lp,
+                kL=kL, kR=kR)
+
+
+def ode_wronskian(S):
+    """W(x) from ode_solutions, up to the common log scale. Should be
+    constant in x -- that is the test."""
+    return S["dpm"] * S["pp"] - S["pm"] * S["dpp"]
