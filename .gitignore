@@ -10,6 +10,9 @@ __pycache__/
 # animation scripts read, and a script in the repo should run from a clone.
 data/run_step_dx*.npz
 
+# Input to the local scan scripts only; no tracked script reads or writes it.
+data/scan.json
+
 # Everything except the two animation scripts stays on disk but out of the
 # repo: still-figure generators, validation, cross-checks and parameter scans.
 # code/analytic.py is the exact single-slab reference that validate_greens.py

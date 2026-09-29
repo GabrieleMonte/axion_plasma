@@ -20,6 +20,20 @@ plt.rcParams.update({"font.size": 10, "mathtext.fontset": "cm", "font.family": "
                      "axes.spines.top": False, "axes.spines.right": False})
 
 p = Params()
+
+# The .npz is a cache. If it is missing (a fresh clone, or it was cleared),
+# regenerate it here from code/axion_solver.py -- this IS the production
+# configuration, so it is the file's provenance as well as its fallback.
+# dx=0.01 is 7e-5 relative; ~60 s.
+if not (DATA / "run_main.npz").exists():
+    from axion_solver import solve
+    print("run_main.npz missing; running the production solve (~60 s)...",
+          flush=True)
+    r = solve(p, x_lo=-90.0, x_hi=140.0, dx=0.01, t_final=260.0, n_snap=601,
+              sponge_width=35.0, sigma_max=2.0, x_sub=4)
+    DATA.mkdir(exist_ok=True)
+    np.savez(DATA / "run_main.npz", x=r["x"], t=r["t"], E=r["E"], wp=r["wp"])
+
 d = np.load(DATA / "run_main.npz")
 x, t, E = d["x"], d["t"], d["E"] / p.gB0a0
 

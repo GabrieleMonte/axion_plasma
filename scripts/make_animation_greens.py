@@ -29,6 +29,28 @@ C_TD, C_GR, C_DIF = "#1f4e79", "#c0392b", "#6d6a63"
 p = Params()
 sp = StepParams()
 
+# The .npz is a cache. If it is missing, regenerate both fields here -- this
+# IS how the committed file was produced, so it is the provenance as well as
+# the fallback. The time-domain run uses the step profile at dx=0.005 (~8 min
+# for the pair; see CLAUDE.md section 7 for why dx matters at the interfaces).
+if not (DATA / "greens_run.npz").exists():
+    from axion_solver import solve
+    from greens_solver import E_y, omega_grid
+    print("greens_run.npz missing; regenerating both solutions (~8 min)...",
+          flush=True)
+    r = solve(sp, x_lo=-90.0, x_hi=140.0, dx=0.005, t_final=260.0, n_snap=601,
+              sponge_width=35.0, sigma_max=2.0, x_sub=4)
+    keep = (r["x"] >= -3.0) & (r["x"] <= 55.0)
+    xs = r["x"][keep][::4]
+    E_td_ = r["E"][:, keep][:, ::4]
+    print("  time domain done; building E~ ...", flush=True)
+    om_ = omega_grid(p)
+    Eg_, _, Et_ = E_y(xs, r["t"], p, om=om_)
+    cols = [int(np.argmin(np.abs(xs - xv))) for xv in (7.4, 12.3, 30.0)]
+    DATA.mkdir(exist_ok=True)
+    np.savez(DATA / "greens_run.npz", x=xs, t=r["t"], E=Eg_, E_td=E_td_,
+             om=om_, Et_cols=Et_[:, cols], Et_x=xs[cols])
+
 d = np.load(DATA / "greens_run.npz")
 x, t = d["x"], d["t"]
 Eg = d["E"] / p.gB0a0            # Green's function
