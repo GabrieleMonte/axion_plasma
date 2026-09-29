@@ -107,6 +107,24 @@ for lam in (1j*0.7, 1j*0.1 - 0.66, 0.3j + 0.02):
         worst = max(worst, abs(val - ref)/max(abs(ref), 1e-8))
 gate("dF2 vs quadrature", worst, 1e-12)
 
+# Regression test for the erf-cancellation bug. These are the actual
+# parameters of the region-5 psi_+ integral at wp=1.3, omega=1.0+0.015i,
+# where BOTH erfc arguments sit at Re z << 0 so erf -> -1 at both limits.
+# Computing the antiderivatives separately returned ~1e-16 of roundoff where
+# the true integral is ~1e-36: twenty orders of magnitude of pure noise.
+om = 1.0 + 0.015j
+q = (om - p5.omega_a)/p5.v_a
+C = -0.5*(q*s_x)**2
+beta = -1j*q*s_x/SQ2
+kv = np.sqrt(complex(om**2 - 1.69))
+if kv.imag < 0:
+    kv = -kv
+lam = 1j*(p5.k_a + q + kv)
+val = dF1(36.4, 138.5, lam, alpha, beta, C)
+f = lambda u: scaled_erfc(C + lam*u, alpha*u + beta)
+ref = gl_panels(f, 36.4, 138.5, 4000)
+gate("dF1 with both erfc args deep in Re z < 0", abs(val - ref)/abs(ref), 1e-10)
+
 ok = True
 u = np.linspace(-91.5, 138.5, 401)
 for om in (30.0, 120.0, 400.0):
@@ -139,19 +157,21 @@ for w0 in (1.0, 1.15, 0.85):
         ref = E_uniform_kspace(xs7, om, w0, pu)
         worst = max(worst, np.max(np.abs(E_tilde(xs7, om, pu) - ref))
                     / np.max(np.abs(ref)))
-gate("uniform E_tilde vs k-space (complex omega)", worst, 1e-10)
+gate("uniform E_tilde vs k-space (complex omega)", worst, 1e-12)
 
-# The same check on the contour the inversion actually uses. E_tilde loses
-# accuracy in a DEEPLY EVANESCENT medium at small Im(omega): psi_- grows like
-# e^{|kappa|x} while the source only decays like e^{-eps x/v_a}, so
-# int psi_- S reaches ~1e7 while E~ itself is ~1e-5, and psi_+(x), that
-# integral and W are formed as separate factors. See CLAUDE.md section 7.
+# The same check on the contour the inversion actually uses, across the
+# evanescent range. This is the regression test for the erf-cancellation bug
+# (CLAUDE.md section 7): before the fix w0=1.3 sat at 1e-3 here.
 print("-- E_tilde on the working contour (evanescent stress test) --")
-for w0, tgt in ((0.8, 1e-9), (1.0, 1e-9), (1.2, 1e-4), (1.3, 5e-3)):
+for w0 in (0.8, 1.0, 1.2, 1.3, 1.5):
     pu = Params(w=(w0,)*5)
-    ref = E_uniform_kspace(xs7, 1.0 + 0.015j, w0, pu)
-    err = np.max(np.abs(E_tilde(xs7, 1.0 + 0.015j, pu) - ref))/np.max(np.abs(ref))
-    gate(f"  uniform w0={w0}, Im(omega)=0.015", err, tgt)
+    worst = 0.0
+    for wr in (0.5, 1.0, 1.4):
+        for ev in (0.3, 0.015):
+            ref = E_uniform_kspace(xs7, wr + 1j*ev, w0, pu)
+            got = E_tilde(xs7, wr + 1j*ev, pu)
+            worst = max(worst, np.max(np.abs(got - ref))/np.max(np.abs(ref)))
+    gate(f"  uniform w0={w0}, 6 (omega, eps) pairs", worst, 1e-9)
 
 h = 5e-3
 worst = 0.0
@@ -168,9 +188,7 @@ for om in (0.5, 0.85, 1.0, 1.35, 2.5):
     scale = np.abs((V - om_eff**2)*E[2]) + np.abs(d2E) + np.abs(S)
     keep = np.abs(E[2]) > 1e-6*np.abs(E[2]).max()     # below that, d2E is noise
     worst = max(worst, np.max(np.abs(resid[keep])/scale[keep]))
-    # 4th-order FD at h=5e-3 against a field spanning ~10 decades in x:
-    # 2e-6 is the stencil's own noise floor, not the solution's error
-gate("ODE residual (FD, where field resolvable)", worst, 1e-5)
+gate("ODE residual (FD, where field resolvable)", worst, 1e-7)
 
 worst = 0.0
 for om in (0.5, 0.97, 1.35):
@@ -195,10 +213,10 @@ else:
     print("-- D0: uniform medium, E_y(x,t) vs analytic.E_slab --")
     xs = np.arange(-3.0, 55.0 + 1e-9, 1.0)
     ts = np.array([0.0, 40.0, 100.0, 250.0])
-    # the looser targets at 1.2/1.3 are the evanescent-cancellation limit
-    # measured above, not a quadrature tolerance -- refining the omega grid
-    # does not move them (verified over 5 grid parameters spanning 16x)
-    for w0, tgt in ((0.8, 1e-4), (1.0, 1e-4), (1.2, 1e-3), (1.3, 3e-3)):
+    # all five sit at ~1e-5, set by the omega quadrature; wp >= 1.2 is
+    # evanescent at the drive frequency and used to be far worse
+    for w0, tgt in ((0.8, 1e-4), (1.0, 1e-4), (1.2, 1e-4), (1.3, 1e-4),
+                    (1.5, 1e-4)):
         pu = Params(w=(w0,)*5)
         t0 = time.time()
         E, om, _ = E_y(xs, ts, pu, om=omega_grid(pu, w_max=2000.0))

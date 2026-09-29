@@ -60,8 +60,45 @@ def scaled_erfc(E, z):
 
 
 def scaled_erf(E, z):
-    """e^E * erf(z) = e^E - e^E erfc(z), stable in the same sense."""
+    """e^E * erf(z) = e^E - e^E erfc(z). Only safe when erfc(z) is not close
+    to 1; for a DIFFERENCE of two of these use scaled_erf_diff instead."""
     return np.exp(np.asarray(E, complex)) - scaled_erfc(E, z)
+
+
+def scaled_erf_diff(E, z1, z2):
+    """e^E * [erf(z2) - erf(z1)], which is what the definite integrals need.
+
+    Never formed as a difference of the two erf values: for Re z << 0 both are
+    within 1e-140 of -1, so subtracting them in double precision returns pure
+    roundoff (~1e-16) where the true answer is ~1e-140. Using
+    erf(z2) - erf(z1) = erfc(z1) - erfc(z2), and erfc(z) = 2 - erfc(-z) when
+    Re z < 0, keeps both operands small so the subtraction is exact to the
+    precision of the smaller one. This was a real 20-order-of-magnitude bug."""
+    E = np.asarray(E, complex)
+    z1 = np.asarray(z1, complex)
+    z2 = np.asarray(z2, complex)
+    E, z1, z2 = np.broadcast_arrays(E, z1, z2)
+    out = np.empty(E.shape, complex)
+    m = (z1.real < 0) & (z2.real < 0)        # both erfc -> 2, flip both
+    n = ~m
+    if n.any():
+        out[n] = scaled_erfc(E[n], z1[n]) - scaled_erfc(E[n], z2[n])
+    if m.any():
+        out[m] = scaled_erfc(E[m], -z2[m]) - scaled_erfc(E[m], -z1[m])
+    return out
+
+
+def _expm1(z):
+    """exp(z) - 1 for complex z, accurate as z -> 0 (numpy has no complex
+    expm1). Needed so the two `2 e^E` halves of erfc(z) = 2 - erfc(-z) cancel
+    analytically rather than by subtraction."""
+    z = np.asarray(z, complex)
+    out = np.exp(z) - 1.0
+    small = np.abs(z) < 1e-6
+    if small.any():
+        zs = z[small]
+        out[small] = zs*(1.0 + zs/2.0*(1.0 + zs/3.0))
+    return out
 
 
 # ----------------------------------------------------------------------------
@@ -126,15 +163,41 @@ def _gauss_legendre(f, a, b, n_panels, order=10):
 
 
 def dF1(u1, u2, lam, alpha, beta, C):
-    """e^C * int_{u1}^{u2} e^{lam u} erfc(alpha u + beta) du. All arguments
-    broadcast. Where lam*(u2-u1) is too small the antiderivative difference
-    loses every digit to cancellation, so those entries are integrated
-    directly instead; lam does pass through 0 (at omega = omega_a in the
-    resonant slab, exactly), so this branch is not decorative."""
-    u1 = np.asarray(u1, float)
-    u2 = np.asarray(u2, float)
-    lam = np.asarray(lam, complex)
-    out = _F1(u2, lam, alpha, beta, C) - _F1(u1, lam, alpha, beta, C)
+    """e^C * int_{u1}^{u2} e^{lam u} erfc(alpha u + beta) du (Eq. 36).
+
+    Built as a definite integral, NOT as F1(u2) - F1(u1): each piece is a
+    difference of two values that are nearly equal whenever the erfc
+    arguments sit deep in a half-plane, so forming the antiderivatives first
+    throws away every significant digit. Both pieces below are differences of
+    quantities that are individually small.
+
+    All arguments broadcast. lam does pass through 0 (at omega = omega_a in
+    the resonant slab, exactly), so the small-lam branch is not decorative."""
+    u1, u2, lam, beta, C = np.broadcast_arrays(
+        np.asarray(u1, float), np.asarray(u2, float), np.asarray(lam, complex),
+        np.asarray(beta, complex), np.asarray(C, complex))
+    z1 = alpha*u1 + beta
+    z2 = alpha*u2 + beta
+    E1 = C + lam*u1
+    E2 = C + lam*u2
+
+    # piece 1: e^C [ e^{lam u2} erfc(z2) - e^{lam u1} erfc(z1) ]
+    A = np.empty(z1.shape, complex)
+    m = (z1.real < 0) & (z2.real < 0)      # both erfc -> 2; that part cancels
+    n = ~m
+    if n.any():
+        A[n] = scaled_erfc(E2[n], z2[n]) - scaled_erfc(E1[n], z1[n])
+    if m.any():
+        A[m] = (2.0*np.exp(E1[m])*_expm1(lam[m]*(u2[m] - u1[m]))
+                - (np.exp(E2[m] - z2[m]**2)*wofz(-1j*z2[m])
+                   - np.exp(E1[m] - z1[m]**2)*wofz(-1j*z1[m])))
+
+    # piece 2: e^{C+D} [ erf(w2) - erf(w1) ],  w = z - lam/(2 alpha)
+    D = (lam/alpha)*(lam/(4.0*alpha) - beta)
+    half = lam/(2.0*alpha)
+    B = scaled_erf_diff(C + D, z1 - half, z2 - half)
+
+    out = (A + B)/lam
     span = np.abs(u2 - u1)
     tiny = np.broadcast_to(np.abs(lam)*span <= 1e-4, out.shape)
     if tiny.any():
@@ -152,12 +215,14 @@ def dF1(u1, u2, lam, alpha, beta, C):
 
 
 def dF2(u1, u2, lam, sigma_x):
-    """int_{u1}^{u2} e^{-u^2/2 sigma^2} e^{lam u} du   (Eq. 37)."""
+    """int_{u1}^{u2} e^{-u^2/2 sigma^2} e^{lam u} du   (Eq. 37). Same
+    cancellation trap as dF1: both erf values sit at -1 once the packet is
+    far away, so the difference has to be taken through scaled_erf_diff."""
     lam = np.asarray(lam, complex)
     E = 0.5*(lam*sigma_x)**2
     z1 = (np.asarray(u1, float) - lam*sigma_x**2) / (sigma_x*SQ2)
     z2 = (np.asarray(u2, float) - lam*sigma_x**2) / (sigma_x*SQ2)
-    return sigma_x*np.sqrt(np.pi/2.0)*(scaled_erf(E, z2) - scaled_erf(E, z1))
+    return sigma_x*np.sqrt(np.pi/2.0)*scaled_erf_diff(E, z1, z2)
 
 
 # ----------------------------------------------------------------------------
