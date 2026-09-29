@@ -2,8 +2,8 @@
 (solid) and the frequency-domain Green's function (dashed), both on the
 piecewise-constant profile, plus their difference.
 
-Reads data/greens_run.npz (written by scripts/validate_greens.py) and writes
-figures/greens_vs_solver.mp4. Needs ffmpeg.
+Reads data/greens_run.npz, rebuilding it from the solvers if it is absent
+(see below), and writes figures/greens_vs_solver.mp4. Needs ffmpeg.
 """
 import sys
 from pathlib import Path
