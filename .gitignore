@@ -5,15 +5,18 @@ CLAUDE.md
 __pycache__/
 *.pyc
 
-# Large regenerable data (see CLAUDE.md section 4 for the commands).
-# run_main.npz is tracked; these are references and intermediates, ~100 MB.
+# Large regenerable data (see CLAUDE.md section 4 for the commands), ~100 MB.
+# run_main.npz and greens_run.npz stay tracked: they are what the two
+# animation scripts read, and a script in the repo should run from a clone.
 data/run_step_dx*.npz
-data/greens_run.npz
 
-# Local tooling: validation, cross-checks and parameter scans. Kept on disk,
-# out of the repo, which tracks only the production runs. code/analytic.py is
-# the exact single-slab reference used by validate_greens.py and nothing else.
+# Everything except the two animation scripts stays on disk but out of the
+# repo: still-figure generators, validation, cross-checks and parameter scans.
+# code/analytic.py is the exact single-slab reference that validate_greens.py
+# checks the frequency-domain solver against; nothing else uses it.
 code/analytic.py
+scripts/make_plots.py
+scripts/build_viewer.py
 scripts/validate_greens.py
 scripts/fig_greens_compare.py
 scripts/scan.py
