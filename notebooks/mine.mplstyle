@@ -1,0 +1,40 @@
+figure.figsize		: 4.5, 2.781152949374345	# figure size in inches (with golden ratio 1.61803398875)
+figure.dpi		: 360				# figure dots per inch
+font.family		: serif				# font family
+font.serif		: Computer Modern Roman		# serif font
+font.sans-serif		: Computer Modern Sans serif	# sans-serif font
+font.size		: 10.5				# font size
+text.usetex		: True				# use latex for all text handling
+axes.axisbelow		: False                         # draw axis gridlines and ticks above patches and lines
+axes.labelsize		: 10.5				# fontsize of the x any y labels
+axes.linewidth		: 0.550          		# edge linewidth
+lines.linewidth		: 1.3				# line width in points
+legend.fontsize		: 7.5				# fontsize in legend
+legend.labelspacing	: 0.2				# vertical space between legend entries in fontsize units
+legend.borderaxespad	: 0.3				# border between axes and legend edge in fontsize units
+legend.frameon		: False				# draw a frame around legend
+xtick.top		: True				# draw ticks on the top side
+xtick.direction		: in				# direction: {in, out, inout}
+xtick.labelsize		: 8.5				# fontsize of the tick labels
+xtick.major.size	: 2.8				# major tick size in points
+xtick.minor.size	: 1.55555555555556		# minor tick size in points (2.8/1.8)
+xtick.major.width	: 0.549				# major tick width in points
+xtick.minor.width	: 0.366				# minor tick width in points (0.549/1.5)
+xtick.major.pad		: 3.				# distance to the major tick label in points
+xtick.minor.pad		: 3.				# distance to the minor tick label in points
+xtick.minor.visible	: True				# visibility of minor ticks on x-axis
+ytick.right		: True				# draw ticks on the right side
+ytick.direction		: in				# direction: {in, out, inout}
+ytick.labelsize		: 8.5				# fontsize of the tick labels
+ytick.major.size	: 2.8				# major tick size in points
+ytick.minor.size	: 1.55555555555556		# minor tick size in points (2.8/1.8)
+ytick.major.width	: 0.549				# major tick width in points
+ytick.minor.width	: 0.366				# minor tick width in points (0.549/1.5)
+ytick.major.pad		: 3.				# distance to the major tick label in points
+ytick.minor.pad		: 3.				# distance to the minor tick label in points
+ytick.minor.visible	: True				# visibility of minor ticks on y-axis
+savefig.dpi		: 360				# figure dots per inch
+savefig.format		: eps				# figure format: png, ps, pdf, svg
+savefig.bbox		: tight				# 'tight' or 'standard'
+savefig.pad_inches	: 0.05				# padding to be used when bbox is set to 'tight'
+savefig.transparent	: False				# setting that controls whether figures are saved with a transparent background by default

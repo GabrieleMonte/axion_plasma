@@ -1,9 +1,10 @@
 # Claude Code project notes stay local
 CLAUDE.md
 
-# Python bytecode
+# Python bytecode and notebook checkpoints
 __pycache__/
 *.pyc
+.ipynb_checkpoints/
 
 # Large regenerable data (~100 MB): the piecewise-constant time-domain
 # reference, read only by validate_greens.py.
