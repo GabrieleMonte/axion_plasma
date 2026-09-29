@@ -4,3 +4,8 @@ CLAUDE.md
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Large regenerable data (see CLAUDE.md section 4 for the commands).
+# run_main.npz is tracked; these are references and intermediates, ~100 MB.
+data/run_step_dx*.npz
+data/greens_run.npz
